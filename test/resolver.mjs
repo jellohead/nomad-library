@@ -1,5 +1,5 @@
 // Server code with the network mocked. Mostly the website check (/api/library): pasting any normal
-// library website should find the catalog. Also requests, email sign-ups and the music CD search.
+// library website should find the catalog. Also requests, email sign-ups, the music CD search and My branch.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { onRequestGet as library } from "../functions/api/library.js";
@@ -7,6 +7,8 @@ import { onRequestPost as request } from "../functions/api/request.js";
 import { onRequestPost as notify } from "../functions/api/notify.js";
 import { onRequestGet as unsubscribe } from "../functions/api/unsubscribe.js";
 import { onRequestGet as search } from "../functions/api/search.js";
+import { onRequestGet as branches } from "../functions/api/branches.js";
+import { onShelfAt } from "../functions/api/avail.js";
 import { shape, artistOf } from "../lib/core.js";
 
 const stored = new Map();
@@ -158,3 +160,48 @@ await test("an artist's name is read off the record, a film's is left alone", ()
 });
 
 globalThis.fetch = original;
+
+await test("my branch: the catalog's own branch list, and a search that keeps to one branch's shelf", async () => {
+  const asked = [];
+  globalThis.fetch = async (url) => {
+    asked.push(String(url));
+    if (/limit=1/.test(String(url))) return Response.json({ catalogSearch: { fields: [
+      { id: "FORMAT", fieldFilters: [{ value: "DVD", label: "" }] },
+      { id: "STATUS", fieldFilters: [{ value: "_online_", label: "_online_" }, { value: "_physical_", label: "_physical_" },
+        { value: "TOBIN", label: "Tobin at Oakwell Library" }, { value: "BAZAN", label: "Bazan Library " }] }] } });
+    return Response.json({ catalogSearch: { pagination: { count: 0, pages: 1 } }, entities: { bibs: {} } });
+  };
+  const call = async (fn, q) => { const r = await fn({ request: new Request("https://x/api/x?" + q), env: {}, waitUntil() {} }); return { status: r.status, body: await r.json() }; };
+
+  const list = await call(branches, "lib=mysapl");
+  assert.equal(list.status, 200);
+  assert.deepEqual(list.body, [{ code: "BAZAN", name: "Bazan Library" }, { code: "TOBIN", name: "Tobin at Oakwell Library" }], "places only, sorted by name");
+  assert.equal((await call(branches, "lib=Not A Slug!")).status, 400);
+
+  await call(search, "lib=mysapl&fmt=music&shelf=jazz&branch=BAZAN");
+  assert.match(asked.at(-1), /f_FORMAT=MUSIC_CD/);
+  assert.match(asked.at(-1), /f_STATUS=BAZAN/, "the catalog's 'available now at' filter");
+  await call(search, "lib=seattle&fmt=all&branch=4");
+  assert.match(asked.at(-1), /f_STATUS=4/, "numeric codes too (Seattle, Chicago)");
+  // anything that isn't a code is dropped, never passed through
+  await call(search, "lib=mysapl&fmt=all&branch=" + encodeURIComponent("X&f_FORMAT=BK"));
+  assert.doesNotMatch(asked.at(-1), /f_STATUS|BK/);
+  await call(search, "lib=mysapl&fmt=all");
+  assert.doesNotMatch(asked.at(-1), /f_STATUS/, "no branch, no filter");
+});
+
+test("the title page learns which branches have a copy in, with call numbers", () => {
+  const item = (code, name, status, call) => ({ branch: { code, name }, branchName: name, callNumber: call, availability: { status } });
+  const at = onShelfAt({
+    a: item("CENTRAL", "Central Library", "AVAILABLE", "CD JAZZ COLTRANE"),
+    b: item("BAZAN", "Bazan Library", "AVAILABLE", "CD JAZZ COLTRANE"),
+    c: item("BAZAN", "Bazan Library", "AVAILABLE", "CD JAZZ COLTRANE"),
+    d: item("TOBIN", "Tobin at Oakwell Library", "CHECKED_OUT", "CD JAZZ COLTRANE"),
+    e: item("CENTRAL", "Central Library", "AVAILABLE", "CD JAZZ COLTRANE v.2"),
+  });
+  assert.deepEqual(at, [
+    { code: "BAZAN", name: "Bazan Library", call: ["CD JAZZ COLTRANE"] },
+    { code: "CENTRAL", name: "Central Library", call: ["CD JAZZ COLTRANE", "CD JAZZ COLTRANE v.2"] },
+  ], "one line per branch, checked-out copies left out");
+  assert.deepEqual(onShelfAt(undefined), []);
+});

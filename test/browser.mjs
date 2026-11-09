@@ -162,7 +162,8 @@ async function newPage(browser, W, { ctx, seedState, idbBroken, viewport, askEma
           const total = u.searchParams.get("fmt") === "music" && u.searchParams.get("shelf") === "jazz" ? 25 : 100;
           return done(200, JSON.stringify({ total, page: pg, pages: Math.ceil(total / 25), rows: Array.from({ length: 25 }, (_, i) => row(lib, (pg - 1) * 25 + i)) }));
         }
-        if (p === "/api/avail") { W.availReqs.push(u.search); const out = {}; for (const id of (u.searchParams.get("ids") || "").split(",")) out[id] = { avail: false, copies: 0, total: 3, holds: 7 }; return done(200, JSON.stringify(out)); }
+        if (p === "/api/avail") { W.availReqs.push(u.search); const out = {}; for (const id of (u.searchParams.get("ids") || "").split(",")) out[id] = W.availAt ? { avail: true, copies: 2, total: 3, holds: 0, at: W.availAt } : { avail: false, copies: 0, total: 3, holds: 7 }; return done(200, JSON.stringify(out)); }
+        if (p === "/api/branches") { (W.branchReqs ||= []).push(u.search); return done(200, JSON.stringify(W.branches || [])); }
         return done(404, JSON.stringify({ error: "not mocked" }));
       }
       if (u.pathname === "/directory.json") return done(200, JSON.stringify({ v: 1, libs: W.dir }), "application/json", { "cache-control": "no-store" });
@@ -1017,6 +1018,72 @@ scenario("music CDs are offered only where the catalog can be searched live", as
   await waitCards(page, 12);
   ok(await page.$eval('#fmt [data-fmt="all"]', e => e.getAttribute("aria-pressed") === "true"), "it falls back to films");
   ok(W.searchReqs.length === 0, `no stray catalog search (${W.searchReqs.length})`);
+  ok(page.errors.length === 0, `no page errors ${page.errors.slice(0, 1)}`);
+});
+
+scenario("my branch: pick a branch and every shelf shows only what's checked in there, until you clear it", async b => {
+  const W = world({ snap: { alpha: { body: snapBody(makeRows("alpha", 400, { games: 40 })) } },
+    branches: [{ code: "BAZAN", name: "Bazan Library" }, { code: "CENTRAL", name: "Central Library" }],
+    availAt: [{ code: "BAZAN", name: "Bazan Library", call: ["CD JAZZ COLTRANE"] }, { code: "CENTRAL", name: "Central Library", call: ["CD JAZZ COLTRANE"] }] });
+  const { page } = await newPage(b, W);
+  await page.goto(`https://${HOST}/`, { waitUntil: "domcontentloaded" });
+  await pickLibrary(page, "alpha");
+  await waitCards(page, 12);
+  await page.waitForFunction(() => /\d[\d,]* titles/.test(document.querySelector("#status").textContent), { timeout: 20000 });
+  ok(W.searchReqs.length === 0, "films came from the copy before a branch was picked");
+
+  await page.click("#filtBtn");
+  await page.waitForSelector("#branchF:not([disabled])", { timeout: 10000 });
+  const opts = await page.$$eval("#branchF option", e => e.map(o => o.textContent));
+  ok(opts.join("|") === "Any branch|Bazan Library|Central Library", `the library's own branches are offered (${opts.join(", ")})`);
+  await page.select("#branchF", "BAZAN"); await sleep(200);
+  ok(!(await page.$("#onShelfF")), "the on-the-shelf toggle steps aside: the branch already means that");
+  await page.evaluate(() => document.querySelector("#filters").close());
+  await page.waitForFunction(() => /^100 titles on the shelf at Bazan/.test(document.querySelector("#status").textContent.trim()), { timeout: 20000 });
+  const q0 = new URLSearchParams(W.searchReqs.at(-1));
+  ok(q0.get("branch") === "BAZAN" && q0.get("fmt") === "all", `films are asked live, for that branch (${W.searchReqs.at(-1)})`);
+  await waitCards(page, 12);
+  ok(await page.$eval("#grid .card .avail", e => e.textContent === "On the shelf at Bazan"), "cards say which shelf");
+  ok((await page.$$eval("#active .tag", e => e.map(x => x.textContent.replace("×", "").trim()))).join("|") === "On the shelf at Bazan", "one chip names the branch");
+
+  // it follows you into Music
+  await page.click('#fmt [data-fmt="music"]');
+  await page.waitForFunction(() => /CDs on the shelf at Bazan/.test(document.querySelector("#status").textContent), { timeout: 20000 });
+  const q1 = new URLSearchParams(W.searchReqs.at(-1));
+  ok(q1.get("branch") === "BAZAN" && q1.get("fmt") === "music", `CDs too (${W.searchReqs.at(-1)})`);
+
+  // the title page: your branch first with its call number, then the other branches that have it in
+  await waitCards(page, 12);
+  await page.click("#grid .card .cover");
+  await page.waitForFunction(() => /right now/.test(document.querySelector("#liveAv")?.textContent || ""), { timeout: 10000 });
+  const live = await page.$eval("#liveAv", e => e.innerText.replace(/\s+/g, " ").trim());
+  ok(live === "On the shelf at Bazan right now · CD JAZZ COLTRANE Also on the shelf at Central", `where to go, and where on the shelf ("${live}")`);
+  await page.evaluate(() => document.querySelector("#detail").close()); await sleep(500);
+
+  // kept for the next visit
+  await page.goto(`https://${HOST}/?lib=alpha`, { waitUntil: "domcontentloaded" });
+  await page.waitForFunction(() => /on the shelf at Bazan/.test(document.querySelector("#status").textContent), { timeout: 20000 });
+  ok(new URLSearchParams(W.searchReqs.at(-1)).get("branch") === "BAZAN", "the branch is still picked after a reload");
+
+  // clearing the chip goes back to the whole library
+  await page.click('#active [data-clear="branch"]');
+  await page.waitForFunction(() => !/on the shelf at/.test(document.querySelector("#status").textContent) && /\d/.test(document.querySelector("#status").textContent), { timeout: 20000 });
+  ok(await page.evaluate(() => !Object.keys(JSON.parse(localStorage.getItem("nl")).branches || {}).length), "and forgets it");
+  ok((W.branchReqs || []).length === 1, `the branch list was asked once (${(W.branchReqs || []).length})`);
+  ok(page.errors.length === 0, `no page errors ${page.errors.slice(0, 1)}`);
+});
+
+scenario("my branch is offered only where the catalog can be searched live", async b => {
+  const W = world({ branches: [{ code: "BAZAN", name: "Bazan Library" }] });
+  const { page } = await newPage(b, W);
+  await page.goto(`https://${HOST}/`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("#pickInput", { visible: true });
+  await page.type("#pickInput", "https://sdpl.na5.iiivega.com/search?query=cats");
+  await page.evaluate(() => document.querySelector("#pickForm").requestSubmit());
+  await waitCards(page, 12);
+  await page.click("#filtBtn"); await sleep(300);
+  ok(!(await page.$("#branchF")), "a catalog we copy ourselves has no branch picker");
+  ok(!(W.branchReqs || []).length, "and nobody asks it for branches");
   ok(page.errors.length === 0, `no page errors ${page.errors.slice(0, 1)}`);
 });
 

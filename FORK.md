@@ -20,6 +20,7 @@ Routine work happens on feature branches off `main`, pushed to `origin` only.
 | Branch | Commit | What it does |
 |---|---|---|
 | `music-search` | `d6e846a` | Adds a Music button (next to Both / Blu-ray / DVD / Games) that searches a BiblioCommons library's own catalog for music CDs — genre shelves, artist + year on cards, no IMDb ratings or trailers (there's no IMDb for albums). Only works where the catalog can be searched live, so it's hidden at the nationwide shelf, "All my libraries," and catalogs copied by `nomad-library-data` (Vega, Polaris, SirsiDynix, CARL). See the "Music CDs" section added to `README.md` on that branch for the implementation details. |
+| `branch-shelf` | (see `git log music-search..branch-shelf`) | Builds on `music-search`. A My branch picker in Filters: pick a branch and every shelf shows only what's checked in there right now, using the catalog's own "available now at" filter. The title page lists which branches have a copy in, with the call number. BiblioCommons libraries only. See "My branch" in `README.md` on that branch. |
 
 `main` here still matches `upstream/main` as of 2026-11-08 (`d197354`).
 

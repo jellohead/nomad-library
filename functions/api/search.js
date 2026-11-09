@@ -1,6 +1,7 @@
-// GET /api/search?lib=bclsnj&fmt=all|br|dvd|games|music&shelf=horror&q=&sort=&page=1
+// GET /api/search?lib=bclsnj&fmt=all|br|dvd|games|music&shelf=horror&q=&sort=&page=1&branch=BAZAN
 // Live from the library's own catalog. Ratings are matched in the browser.
-import { gw, json, shape, SLUG_RE } from "../../lib/core.js";
+// branch: only what is on the shelf at that branch right now (the catalog's own "available now at" filter).
+import { gw, json, shape, SLUG_RE, BRANCH_RE } from "../../lib/core.js";
 
 // Shelves are catalog queries that work the same at every BiblioCommons library.
 export const SHELVES = {
@@ -68,9 +69,10 @@ export const MUSIC_SHELVES = {
 const FMT = { all: "DVD|BLURAY", br: "BLURAY", dvd: "DVD", games: "VIDEO_GAME", music: "MUSIC_CD" };
 const SORTS = { new: "newly_acquired", title: "title", year: "published_date" };
 
-function path(lib, s, fmt, page, sort) {
+function path(lib, s, fmt, page, sort, branch) {
   const p = new URLSearchParams({ query: s.q, searchType: s.st, f_FORMAT: FMT[fmt] || FMT.all, limit: "25", page: String(page) });
   if (s.f) { const [k, v] = s.f.split("="); p.set(k, v); }
+  if (branch) p.set("f_STATUS", branch);
   const so = sort || s.sort;
   if (so) p.set("sort", so);
   return `${lib}/bibs/search?${p}`;
@@ -97,12 +99,14 @@ export async function onRequestGet(ctx) {
   const shelf = q ? { q, st: "keyword" } : shelves[shelfKey];
   const sortKey = u.searchParams.get("sort") || "";
   const page = Math.max(1, Math.min(10000, Math.floor(+u.searchParams.get("page") || 1)));
+  const branch = BRANCH_RE.test(u.searchParams.get("branch") || "") ? u.searchParams.get("branch") : "";
 
-  const gatewayPath = path(lib, shelf, fmt, page, SORTS[sortKey]);
+  const gatewayPath = path(lib, shelf, fmt, page, SORTS[sortKey], branch);
   const cacheKey = new Request(`${u.origin}/__catalog-search-v2/${encodeURIComponent(gatewayPath)}`);
   const cached = await caches.default.match(cacheKey);
   if (cached) return cached;
-  const { ok, status, d } = await gw(ctx, gatewayPath, 1800);
+  // what's on a branch's shelf changes all day, so it's kept 5 minutes instead of 30
+  const { ok, status, d } = await gw(ctx, gatewayPath, branch ? 300 : 1800);
   if (!ok) return json({ error: status === 404 ? "That library wasn't found." : "The library's catalog didn't answer. Try again in a minute." }, { status: 502 });
   const pg = d.catalogSearch?.pagination || {};
   const rows = rowsOf(lib, d).map(({ id, b }) => shape(lib, id, b));

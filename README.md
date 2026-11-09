@@ -57,6 +57,12 @@ npm test              # needs Google Chrome; the network is mocked
 - A genre is one subject heading at the catalog (`MUSIC_SHELVES` in `functions/api/search.js`), one at a time, picked in Filters. The headings were checked against real catalogs; "Classical music" is missing at most libraries, so classical sits under Orchestral, Opera and Piano.
 - A typed search is a keyword search, which the gateway also matches against the performer, so artist names work.
 
+## My branch (since 11.9.26)
+- Filters has a My branch picker at BiblioCommons libraries (same rule as Music: not at the nationwide shelf, All my libraries, or catalogs we copy). Pick one and every shelf, search and format shows only what's checked in at that branch right now. It's kept per library in `S.branches` (and in the account) until it's cleared from its chip or with Clear all; switching library or format keeps it.
+- The branch list is `/api/branches`, read off the catalog's own "available now at" filter (the `STATUS` field of any search, minus `_online_` and `_physical_`). Codes differ by library: `BAZAN` at San Antonio, `4` at Seattle.
+- `/api/search?branch=CODE` adds `f_STATUS=CODE`, kept 5 minutes at the edge instead of 30. Films go live while a branch is picked, because the weekly copy doesn't know which branch has what.
+- The title page lists the branches with a copy in right now (`at` from `/api/avail`, read off the copy list), with My branch first and its call number.
+
 ## Library copies (since 10.11.26)
 - A library opens from a static file `snap/<slug>.json.gz` on Cloudflare Pages (https://nomad-library-copies.pages.dev/snap/, project nomad-library-copies; GitHub Pages capped at 1 GB), made by the copier in the `nomad-library-data` repo on GitHub Actions. No Worker serves catalog data. The browser keeps its own copy in IndexedDB (6 libraries, used at once whatever its age, refreshed in the background).
 - A library with no copy browses live (`/api/search`). The first visitor's browser sends one `POST /api/want` (once per device per day); the copier reads `GET /api/want` and copies requested libraries, oldest request first.

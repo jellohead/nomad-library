@@ -15,8 +15,9 @@ const store = {
   set(v) { try { localStorage.setItem("nl", JSON.stringify(v)); } catch {} },
 };
 let S = Object.assign({ lib: null, libName: "", fmt: "all", shelf: "all", sort: "", onShelf: false, faves: {}, watch: null,
-  genres: [], coll: "", plat: "", mg: "", y0: 0, y1: 0, minR: 0 }, store.get());
+  genres: [], coll: "", plat: "", mg: "", y0: 0, y1: 0, minR: 0, branches: {} }, store.get());
 if (!Array.isArray(S.genres)) S.genres = [];
+if (!S.branches || typeof S.branches !== "object" || Array.isArray(S.branches)) S.branches = {};
 delete S.ages;                            // the age-rating filter (11.1.26) was taken back out
 if ("genre" in S) {                       // saved before genres could be combined
   if (S.genre && !S.genres.length) S.genres = [S.genre];
@@ -44,7 +45,7 @@ function flushSave() {
 }
 addEventListener("pagehide", flushSave);
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") flushSave(); });
-const synced = () => ({ ...(S.demo ? {} : { lib: S.lib, libName: S.libName, ...(S.lib === "shelf" ? { guest: S.guest } : {}) }), libs: S.libs, fmt: S.fmt, faves: S.faves, watch: S.watch });
+const synced = () => ({ ...(S.demo ? {} : { lib: S.lib, libName: S.libName, ...(S.lib === "shelf" ? { guest: S.guest } : {}) }), libs: S.libs, fmt: S.fmt, faves: S.faves, watch: S.watch, branches: S.branches });
 
 function toast(msg) {
   const t = document.createElement("div");
@@ -131,6 +132,7 @@ const searchUrl = (page, sort) => {
   const p = new URLSearchParams({ lib: S.lib, fmt: S.fmt, shelf: S.shelf, page, sort: sort ?? S.sort });
   const q = $("#q").value.trim();
   if (q) p.set("q", q);
+  if (branch()) p.set("branch", branch().code);
   return "/api/search?" + p;
 };
 
@@ -151,6 +153,12 @@ const isMine = () => S.lib === MINE;
 const isMusic = () => S.fmt === "music";
 const musicOK = () => !!S.lib && !isGuest() && !isMine() && !isReaderLib(S.lib);
 const unit = () => S.fmt === "games" ? "games" : isMusic() ? "CDs" : "titles";
+// My branch (11.9.26): pick one branch per library and every shelf shows only what's checked in there right now.
+// It uses the catalog's own "available now at" filter, so like Music it needs a library we search live.
+// It stays until you clear it, through format changes and visits; each library keeps its own.
+const branch = () => (musicOK() && S.branches[S.lib]) || null;
+const branchName = () => shortName(branch()?.name || "");
+function setBranch(b) { if (b) S.branches[S.lib] = { code: b.code, name: b.name }; else delete S.branches[S.lib]; }
 // no shelf status to show: guests, and copies from catalogs that don't report it (snap "na", e.g. older LS2 PAC)
 const noAvail = () => isGuest() || (!isMine() && SNAP?.lib === S.lib && !!SNAP?.na);
 const libKey = e => e.lib === GUEST ? "shelf:" + (e.guest?.catalog?.host || e.guest?.host || e.name || "") : e.lib;
@@ -190,7 +198,7 @@ function cardHTML(r) {
     ? `<img loading="lazy" src="${esc(r.img)}" alt="" onload="if(this.naturalWidth<20)this.onerror()" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'noimg',textContent:${esc(JSON.stringify(r.title))}}))">`
     : `<span class="noimg">${esc(r.title)}</span>`;
   const where = isMine() && r.avail ? [...new Set((r.eds || [r]).filter(e => e.avail).map(e => e.lib))] : [];
-  const av = noAvail() ? "" : r.avail ? `<span class="avail in">On the shelf${where.length > 1 ? ` at ${where.length} libraries` : where.length ? ` at ${esc(shortName(libNameOf(where[0])))}` : ""}</span>`
+  const av = noAvail() ? "" : r.avail ? `<span class="avail in">On the shelf${branch() ? ` at ${esc(branchName())}` : where.length > 1 ? ` at ${where.length} libraries` : where.length ? ` at ${esc(shortName(libNameOf(where[0])))}` : ""}</span>`
     : `<span class="avail out">All out${r.holds ? ` · ${r.holds} hold${r.holds > 1 ? "s" : ""}` : ""}</span>`;
   return `<div class="card" data-id="${esc(r.id)}">
     <button class="cover" data-open="${esc(r.id)}" aria-label="${esc(r.title)}">${cover}${rating}</button>
@@ -235,7 +243,7 @@ function openDetail(r) {
   const yearNote = r.fy && r.disc && r.fy !== r.disc && !isGuest() ? `<b>${r.fy}</b> film, ${r.disc} disc` : `<b>${esc(filmYear(r))}</b>`;
   const fmtLabel = isGuest() ? "" : r.fmts || r.fmt;
   const imdb = r.imdb ? `<a class="btn ghost" href="https://www.imdb.com/title/${esc(r.imdb)}/" target="_blank" rel="noopener noreferrer">IMDb ${r.r ? r.r.toFixed(1) : ""}</a>` : "";
-  const av = r.avail ? `<b style="color:var(--ok)">On the shelf</b>${r.eds || r.copies == null ? "" : ` · ${r.copies} of ${r.total} in`}`
+  const av = r.avail ? `<b style="color:var(--ok)">On the shelf${branch() ? ` at ${esc(branchName())}` : ""}</b>${r.eds || r.copies == null || branch() ? "" : ` · ${r.copies} of ${r.total} in`}`
     : `<b style="color:var(--stamp)">All checked out</b>${r.holds ? ` · ${r.holds} on hold` : ""}`;
   $("#detailBody").innerHTML = `<div class="in">
     <button class="x" data-close aria-label="Close">×</button>
@@ -313,13 +321,32 @@ async function liveStatus(r) {
     Object.assign(r, { avail: any, copies, total, holds });
     if (!$("#detail").open || S.lib !== lib || $("#detailBody").dataset.record !== r.id) return;
     const el = $("#liveAv");
-    if (el) el.innerHTML = any ? `<b style="color:var(--ok)">On the shelf right now</b> · ${copies} of ${total} in`
-      : `<b style="color:var(--stamp)">All checked out right now</b>${holds ? ` · ${holds} on hold` : ""}`;
+    if (el) el.innerHTML = isMine() ? shelfLine(any, copies, total, holds) : branchLines(eds, any, copies, total, holds);
     const eh = $("#edList");
     if (eh) eh.innerHTML = editionsHTML(r);
     const card = $("#grid").querySelector(`.card[data-id="${CSS.escape(r.id)}"]`);
     if (card) card.outerHTML = cardHTML(r);
   } catch {}
+}
+
+const shelfLine = (any, copies, total, holds) => any ? `<b style="color:var(--ok)">On the shelf right now</b> · ${copies} of ${total} in`
+  : `<b style="color:var(--stamp)">All checked out right now</b>${holds ? ` · ${holds} on hold` : ""}`;
+// Which branches have it in right now, so nobody clicks through the catalog's copy list. With My branch set, that
+// branch comes first with its call number (where it sits on the shelf), then the others.
+function branchLines(eds, any, copies, total, holds) {
+  const by = new Map();
+  for (const e of eds) for (const a of e.at || []) {
+    const b = by.get(a.code) || { ...a, call: [] };
+    for (const c of a.call || []) if (!b.call.includes(c)) b.call.push(c);
+    by.set(a.code, b);
+  }
+  const mine = branch(), here = mine && by.get(mine.code), others = [...by.values()].filter(b => b !== here);
+  const names = list => { const n = list.map(b => esc(shortName(b.name))); return n.length > 8 ? `${n.slice(0, 8).join(", ")} and ${n.length - 8} more` : n.join(", "); };
+  const calls = [...new Set([...by.values()].flatMap(b => b.call))];
+  if (!mine) return shelfLine(any, copies, total, holds) + (others.length ? `<br>At ${names(others)}${calls.length === 1 ? ` · ${esc(calls[0])}` : ""}` : "");
+  return (here ? `<b style="color:var(--ok)">On the shelf at ${esc(branchName())} right now</b>${here.call.length ? ` · ${esc(here.call.join(", "))}` : ""}`
+      : `<b style="color:var(--stamp)">Not on the shelf at ${esc(branchName())} right now</b>`) +
+    (others.length ? `<br>Also on the shelf at ${names(others)}` : !here && holds ? `<br>${holds} on hold` : "");
 }
 
 function toggleFav(id) {
@@ -401,8 +428,10 @@ async function liveMore(my = run, fillPages = 0) {
         card.outerHTML = cardHTML(r);
       }
     });
-    const localFilters = S.onShelf || S.plat || S.minR || S.y0 || S.y1;
-    $("#status").innerHTML = esc(d.total ? (localFilters ? `${$("#grid").children.length.toLocaleString()} matches loaded · ${d.total.toLocaleString()} catalog results` : `${d.total.toLocaleString()} ${unit()}`) : isMusic() ? "No music CDs here at this library." : "Nothing here at this library.") + liveNote();
+    const localFilters = (S.onShelf && !branch()) || S.plat || S.minR || S.y0 || S.y1;
+    const at = branch() ? ` on the shelf at ${branchName()}` : "";
+    $("#status").innerHTML = esc(d.total ? (localFilters ? `${$("#grid").children.length.toLocaleString()} matches loaded · ${d.total.toLocaleString()} catalog results${at}` : `${d.total.toLocaleString()} ${unit()}${at}`)
+      : branch() ? `Nothing on the shelf at ${branchName()} right now.` : isMusic() ? "No music CDs here at this library." : "Nothing here at this library.") + liveNote();
     paintCopyToast();
     $("#more").textContent = page < pages ? "Loading more…" : (d.total ? "That's the whole shelf." : "");
   } catch (e) {
@@ -783,7 +812,8 @@ function openCopy(lib) {
   });
 }
 
-const instant = () => SNAP && SNAP.lib === S.lib && SNAP.ver && !isMusic() && ((!S.coll && !liveQ) || isMine());
+// a branch's shelf is always asked live: the weekly copy doesn't know which branch has what
+const instant = () => SNAP && SNAP.lib === S.lib && SNAP.ver && !isMusic() && !branch() && ((!S.coll && !liveQ) || isMine());
 
 let checkingCopy = false;
 async function checkPendingCopy() {
@@ -890,7 +920,7 @@ async function reload() {
 
 // ---- filters ---------------------------------------------------------------------
 
-const activeCount = () => S.genres.length + [S.coll, S.plat, S.mg, S.y0 || S.y1, S.minR, S.onShelf].filter(Boolean).length;
+const activeCount = () => S.genres.length + [S.coll, S.plat, S.mg, S.y0 || S.y1, S.minR, S.onShelf && !branch(), branch()].filter(Boolean).length;
 
 function paintActive() {
   const bits = [];
@@ -901,7 +931,8 @@ function paintActive() {
   if (isMusic() && S.mg) bits.push(["mg", MUSIC_GENRES.find(x => x[0] === S.mg)?.[1] || S.mg]);
   if (S.y0 || S.y1) bits.push(["years", `${S.y0 || YEAR_MIN} to ${S.y1 || YEAR_MAX}`]);
   if (S.minR) bits.push(["minR", `★ ${S.minR}+`]);
-  if (S.onShelf) bits.push(["onShelf", "On the shelf"]);
+  if (branch()) bits.push(["branch", `On the shelf at ${branchName()}`]);
+  else if (S.onShelf) bits.push(["onShelf", "On the shelf"]);
   $("#active").innerHTML = bits.map(([k, l]) => `<button class="tag" data-clear="${k}" aria-label="Remove ${esc(l)}">${esc(l)} <span aria-hidden="true">×</span></button>`).join("") +
     (bits.length > 1 ? `<button class="link" data-clear="all">Clear all</button>` : "");
   const n = activeCount();
@@ -917,6 +948,7 @@ function clearFilter(k) {
   if (k === "all" || k === "years") { S.y0 = 0; S.y1 = 0; }
   if (k === "all" || k === "minR") S.minR = 0;
   if (k === "all" || k === "onShelf") S.onShelf = false;
+  if (k === "branch" || k === "everything") setBranch(null);   // "all" is also a reset when the library or format changes, which keeps the branch
 }
 
 function filterCount() {
@@ -942,12 +974,32 @@ function openFilters() {
     </div>
     ${games || music ? "" : `<h3>Rating</h3>
     <label class="range1">At least <output id="mro">${S.minR ? "★ " + S.minR : "any"}</output><input type="range" id="minR" min="0" max="9" step="0.5" value="${S.minR}"></label>`}
-    ${noAvail() ? "" : `<label class="toggle big"><input type="checkbox" id="onShelfF" ${S.onShelf ? "checked" : ""}> On the shelf now</label>`}
+    ${musicOK() ? branchPicker() : ""}
+    ${noAvail() || branch() ? "" : `<label class="toggle big"><input type="checkbox" id="onShelfF" ${S.onShelf ? "checked" : ""}> On the shelf now</label>`}
     <div class="stack" style="margin-top:18px">
       <button class="btn" id="filtShow">Show ${filterCount() ? filterCount() + " " : ""}${unit()}</button>
       <button class="link" id="filtClear" style="justify-self:center">Clear all</button>
     </div></div>`;
   if (!$("#filters").open) $("#filters").showModal();
+}
+
+// The library's branches, once per library per visit.
+const branchLists = new Map();
+function loadBranches(lib) {
+  if (branchLists.has(lib)) return;
+  branchLists.set(lib, null);
+  api("/api/branches?lib=" + encodeURIComponent(lib)).then(list => { branchLists.set(lib, Array.isArray(list) ? list : []); })
+    .catch(() => branchLists.delete(lib))     // try again next time the panel opens
+    .finally(() => { if ($("#filters").open && S.lib === lib) openFilters(); });
+}
+function branchPicker() {
+  const list = branchLists.get(S.lib), mine = branch();
+  if (list === undefined) loadBranches(S.lib);
+  if (list && !list.length && !mine) return "";      // a catalog that doesn't list its branches
+  const opts = (list || (mine ? [mine] : [])).map(b => `<option value="${esc(b.code)}" ${mine?.code === b.code ? "selected" : ""}>${esc(b.name)}</option>`).join("");
+  return `<h3>My branch</h3>
+    <select id="branchF" aria-label="My branch" ${list ? "" : "disabled"}><option value="">${list ? "Any branch" : "Loading branches…"}</option>${opts}</select>
+    <p class="dim branch-note">Pick one and you'll only see what's on the shelf there right now. It stays picked until you clear it.</p>`;
 }
 
 function filtChanged(rerender = true) {
@@ -968,7 +1020,7 @@ $("#filtBody").addEventListener("click", e => {
   else if (c) { S.coll = S.coll === c.dataset.coll ? "" : c.dataset.coll; if (S.coll) S.genres = []; filtChanged(); }
   else if (p) { S.plat = p.dataset.plat; filtChanged(); }
   else if (mg) { S.mg = S.mg === mg.dataset.mg ? "" : mg.dataset.mg; filtChanged(); }   // the catalog takes one music shelf at a time
-  else if (e.target.id === "filtClear") { clearFilter("all"); filtChanged(); }
+  else if (e.target.id === "filtClear") { clearFilter("all"); clearFilter("everything"); filtChanged(); }
   else if (e.target.id === "filtShow") { $("#filters").close(); }
 });
 $("#filtBody").addEventListener("input", e => {
@@ -980,10 +1032,11 @@ $("#filtBody").addEventListener("input", e => {
     S.y0 = a > YEAR_MIN ? a : 0; S.y1 = b < YEAR_MAX ? b : 0; filtChanged(false);
   } else if (t.id === "minR") { S.minR = +t.value; $("#mro").textContent = S.minR ? "★ " + S.minR : "any"; filtChanged(false); }
   else if (t.id === "onShelfF") { S.onShelf = t.checked; filtChanged(false); }
+  else if (t.id === "branchF") { setBranch((branchLists.get(S.lib) || []).find(b => b.code === t.value) || null); filtChanged(); }
 });
 $("#filters").addEventListener("close", () => { liveQ = false; reload(); });
 $("#filtBtn").onclick = openFilters;
-$("#active").addEventListener("click", e => { const b = e.target.closest("[data-clear]"); if (b) { clearFilter(b.dataset.clear); save(); reload(); } });
+$("#active").addEventListener("click", e => { const b = e.target.closest("[data-clear]"); if (b) { clearFilter(b.dataset.clear); if (b.dataset.clear === "all") clearFilter("everything"); save(); reload(); } });
 document.addEventListener("click", e => { if (e.target.id === "wholeCat") { liveQ = true; reload(); } else if (e.target.id === "retryMore") { $("#more").textContent = "Loading more…"; liveMore(); } else if (e.target.id === "openReadyCopy") { reload(); } else if (e.target.closest?.("[data-ct-close]")) { toastDismissed = S.lib; paintCopyToast(); } else if (e.target.id === "addCatalog" || e.target.id === "addCatalogToast") askCatalog(); });
 // From the shelf: back to the home page and its one box, to add the catalog link.
 function askCatalog() {
@@ -1206,6 +1259,7 @@ function mergeIn(data, signingIn = false) {
   if (isMine() && readableLibs().length < 2) { const e = S.libs[0]; if (e) { S.lib = e.lib; S.libName = e.name; if (e.lib === GUEST) S.guest = e.guest; } }
   if (data.watch || !signingIn) S.watch = data.watch || S.watch;
   if (data.fmt && !store.get().fmt) S.fmt = data.fmt;
+  if (data.branches && typeof data.branches === "object") S.branches = signingIn ? { ...data.branches, ...S.branches } : { ...data.branches };
 }
 
 // Coming back to an open tab or the home screen app picks up changes made on other devices.
