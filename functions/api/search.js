@@ -1,4 +1,4 @@
-// GET /api/search?lib=bclsnj&fmt=all|br|dvd&shelf=horror&q=&sort=&page=1
+// GET /api/search?lib=bclsnj&fmt=all|br|dvd|games|music&shelf=horror&q=&sort=&page=1
 // Live from the library's own catalog. Ratings are matched in the browser.
 import { gw, json, shape, SLUG_RE } from "../../lib/core.js";
 
@@ -34,7 +34,38 @@ export const SHELVES = {
   sports:    { q: "sports films", st: "subject" },
   tv:        { q: "television programs", st: "subject" },
 };
-const FMT = { all: "DVD|BLURAY", br: "BLURAY", dvd: "DVD", games: "VIDEO_GAME" };
+// Music CDs: there is no IMDb for albums, so a shelf is one subject heading, the way catalogs file music.
+// Counts checked at Chicago, Seattle and Burlington County 11.8.26; "Classical music" is missing at most
+// libraries, so classical sits under the headings they do use.
+export const MUSIC_SHELVES = {
+  all:        { q: "*", st: "bl" },
+  rock:       { q: "Rock music", st: "subject" },
+  pop:        { q: "Popular music", st: "subject" },
+  hiphop:     { q: "Rap (Music)", st: "subject" },
+  jazz:       { q: "Jazz", st: "subject" },
+  country:    { q: "Country music", st: "subject" },
+  blues:      { q: "Blues (Music)", st: "subject" },
+  rnb:        { q: "Rhythm and blues music", st: "subject" },
+  soul:       { q: "Soul music", st: "subject" },
+  metal:      { q: "Heavy metal (Music)", st: "subject" },
+  punk:       { q: "Punk rock music", st: "subject" },
+  alt:        { q: "Alternative rock music", st: "subject" },
+  electronic: { q: "Electronic dance music", st: "subject" },
+  folk:       { q: "Folk music", st: "subject" },
+  bluegrass:  { q: "Bluegrass music", st: "subject" },
+  reggae:     { q: "Reggae music", st: "subject" },
+  latin:      { q: "Popular music Latin America", st: "subject" },
+  gospel:     { q: "Gospel music", st: "subject" },
+  world:      { q: "World music", st: "subject" },
+  orchestral: { q: "Orchestral music", st: "subject" },
+  opera:      { q: "Operas", st: "subject" },
+  piano:      { q: "Piano music", st: "subject" },
+  soundtrack: { q: "Motion picture music", st: "subject" },
+  musicals:   { q: "Musicals", st: "subject" },
+  holiday:    { q: "Christmas music", st: "subject" },
+  kids:       { q: "Children's songs", st: "subject" },
+};
+const FMT = { all: "DVD|BLURAY", br: "BLURAY", dvd: "DVD", games: "VIDEO_GAME", music: "MUSIC_CD" };
 const SORTS = { new: "newly_acquired", title: "title", year: "published_date" };
 
 function path(lib, s, fmt, page, sort) {
@@ -61,8 +92,9 @@ export async function onRequestGet(ctx) {
   if (!SLUG_RE.test(lib)) return json({ error: "Pick a library first." }, { status: 400 });
   const fmt = FMT[u.searchParams.get("fmt")] ? u.searchParams.get("fmt") : "all";
   const q = (u.searchParams.get("q") || "").trim().slice(0, 120);
-  const shelfKey = SHELVES[u.searchParams.get("shelf")] ? u.searchParams.get("shelf") : "all";
-  const shelf = q ? { q, st: "keyword" } : SHELVES[shelfKey];
+  const shelves = fmt === "music" ? MUSIC_SHELVES : SHELVES;
+  const shelfKey = shelves[u.searchParams.get("shelf")] ? u.searchParams.get("shelf") : "all";
+  const shelf = q ? { q, st: "keyword" } : shelves[shelfKey];
   const sortKey = u.searchParams.get("sort") || "";
   const page = Math.max(1, Math.min(10000, Math.floor(+u.searchParams.get("page") || 1)));
 

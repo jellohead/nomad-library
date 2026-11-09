@@ -26,7 +26,7 @@ Counts are people who asked, through the site's Feedback button and the YouTube 
 5. **A directory of libraries that work.** Most people don't know their catalog link and paste the homepage. Working links are already saved per library, so a searchable list by state or ZIP is mostly a data and design job, plus people with local knowledge filling the gaps. [#21](https://github.com/Chrisgpresents/nomad-library/issues/21)
 6. **Which branch has the copy.** "On the shelf" can mean a branch 30 minutes away. Each reader would need to keep holdings per branch. [#17](https://github.com/Chrisgpresents/nomad-library/issues/17)
 
-**Bigger ideas (open an issue to talk first):** books, music CDs and audiobooks are the most requested addition (36 people), but there's no IMDb for them, so ratings, covers and matching need new sources, and book catalogs are about 10 times the size. [#10](https://github.com/Chrisgpresents/nomad-library/issues/10) [#12](https://github.com/Chrisgpresents/nomad-library/issues/12)
+**Bigger ideas (open an issue to talk first):** books, music CDs and audiobooks are the most requested addition (36 people), but there's no IMDb for them, so ratings, covers and matching need new sources, and book catalogs are about 10 times the size. Music CDs are a first step (see below): they browse and search, with the artist in place of a rating. [#10](https://github.com/Chrisgpresents/nomad-library/issues/10) [#12](https://github.com/Chrisgpresents/nomad-library/issues/12)
 
 ## Run it on your computer
 
@@ -50,6 +50,12 @@ npm test              # needs Google Chrome; the network is mocked
 - Trailers: `/t?q=` finds the top YouTube result on first tap and caches it 120 days.
 - Deploy (maintainer only): `tools/deploy.sh` publishes a clean export of `main`. Retry on upload timeouts.
 - Passkeys are tied to the domain. Move to the custom domain BEFORE launch, or pages.dev passkeys stop working there (backup codes still work).
+
+## Music CDs (since 11.8.26)
+- A Music button next to Both / Blu-ray / DVD / Games, at BiblioCommons libraries only. The copies hold films and games, so CDs always come from the library's own catalog through `/api/search?fmt=music` (`f_FORMAT=MUSIC_CD`). No copy means no Music button at the nationwide shelf, at All my libraries, or at catalogs we copy ourselves (Vega, Polaris...), because none of those can be searched live.
+- No ratings: there is no IMDb for albums, so a CD never goes through the rating files. The card shows the artist (`briefInfo.authors`, read as "Last, First") and the year, and Top rated and the film-year sorts are hidden.
+- A genre is one subject heading at the catalog (`MUSIC_SHELVES` in `functions/api/search.js`), one at a time, picked in Filters. The headings were checked against real catalogs; "Classical music" is missing at most libraries, so classical sits under Orchestral, Opera and Piano.
+- A typed search is a keyword search, which the gateway also matches against the performer, so artist names work.
 
 ## Library copies (since 10.11.26)
 - A library opens from a static file `snap/<slug>.json.gz` on Cloudflare Pages (https://nomad-library-copies.pages.dev/snap/, project nomad-library-copies; GitHub Pages capped at 1 GB), made by the copier in the `nomad-library-data` repo on GitHub Actions. No Worker serves catalog data. The browser keeps its own copy in IndexedDB (6 libraries, used at once whatever its age, refreshed in the background).

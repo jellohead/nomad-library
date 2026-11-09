@@ -99,6 +99,13 @@ function liveItem(slug, id) {
   const n = +String(id).replace(/\D/g, "") || 0;
   return shape(slug, `L${slug}${n}`, { briefInfo: { title: `${slug.toUpperCase()} Live ${n}`, subtitle: "", format: n % 2 ? "BLURAY" : "DVD", publicationDate: "2011", subjectHeadings: [], genreForm: [] }, availability: { status: "AVAILABLE", availableCopies: 1, totalCopies: 2, heldCopies: 0 } });
 }
+// Music CDs come from the catalog, never from a copy, so the mock answers them like a real gateway would:
+// an album title, the performer filed "Last, First", and a title that happens to share a film's name.
+function liveCD(slug, id) {
+  const n = +String(id).replace(/\D/g, "") || 0;
+  const title = n === 0 ? "The Godfather" : `${slug.toUpperCase()} Album ${n}`;
+  return shape(slug, `M${slug}${n}`, { briefInfo: { title, subtitle: "", format: "MUSIC_CD", publicationDate: String(1990 + (n % 30)), authors: [`Band ${n}, Lead`], subjectHeadings: [], genreForm: [] }, availability: { status: n % 3 ? "AVAILABLE" : "CHECKED_OUT", availableCopies: n % 3 ? 1 : 0, totalCopies: 2, heldCopies: 0 } });
+}
 
 async function newPage(browser, W, { ctx, seedState, idbBroken, viewport, askEmail } = {}) {
   const context = ctx || (await browser.createBrowserContext());
@@ -151,7 +158,9 @@ async function newPage(browser, W, { ctx, seedState, idbBroken, viewport, askEma
           if (W.searchFail) return done(502, JSON.stringify({ error: "The library's catalog didn't answer. Try again in a minute." }));
           const lib = u.searchParams.get("lib"), pg = +u.searchParams.get("page") || 1;
           if (W.searchDelay) await sleep(W.searchDelay);
-          return done(200, JSON.stringify({ total: 100, page: pg, pages: 4, rows: Array.from({ length: 25 }, (_, i) => liveItem(lib, (pg - 1) * 25 + i)) }));
+          const row = u.searchParams.get("fmt") === "music" ? liveCD : liveItem;
+          const total = u.searchParams.get("fmt") === "music" && u.searchParams.get("shelf") === "jazz" ? 25 : 100;
+          return done(200, JSON.stringify({ total, page: pg, pages: Math.ceil(total / 25), rows: Array.from({ length: 25 }, (_, i) => row(lib, (pg - 1) * 25 + i)) }));
         }
         if (p === "/api/avail") { W.availReqs.push(u.search); const out = {}; for (const id of (u.searchParams.get("ids") || "").split(",")) out[id] = { avail: false, copies: 0, total: 3, holds: 7 }; return done(200, JSON.stringify(out)); }
         return done(404, JSON.stringify({ error: "not mocked" }));
@@ -928,6 +937,86 @@ scenario("several library cards: the list remembers each library, All my librari
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => /from 2 libraries/.test(document.querySelector("#status")?.textContent || ""), { timeout: 20000 }).catch(() => {});
   ok(/All my libraries/.test(await page.$eval("#libBtn", e => e.textContent)), "a reload stays on All my libraries");
+  ok(page.errors.length === 0, `no page errors ${page.errors.slice(0, 1)}`);
+});
+
+scenario("music CDs: the Music tab searches the catalog itself, by genre and by artist, with no invented ratings", async b => {
+  const W = world({ snap: { alpha: { body: snapBody(makeRows("alpha", 400, { games: 40 })) } } });
+  const { page } = await newPage(b, W);
+  await page.goto(`https://${HOST}/`, { waitUntil: "domcontentloaded" });
+  await pickLibrary(page, "alpha");
+  await waitCards(page, 12);
+  await page.waitForFunction(() => /\d[\d,]* titles/.test(document.querySelector("#status").textContent), { timeout: 20000 });
+  ok(W.searchReqs.length === 0, "films came from the copy, with no live search");
+  ok(await page.$eval('#fmt [data-fmt="music"]', e => !e.hidden), "a copied BiblioCommons library offers Music");
+
+  // the CDs come from the catalog, because a copy has none
+  await page.click('#fmt [data-fmt="music"]');
+  await page.waitForFunction(() => /\d[\d,]* CDs/.test(document.querySelector("#status").textContent), { timeout: 20000 });
+  await waitCards(page, 12);
+  const q0 = new URLSearchParams(W.searchReqs.at(-1));
+  ok(q0.get("fmt") === "music" && q0.get("lib") === "alpha" && q0.get("shelf") === "all", `asked the catalog for CDs (${W.searchReqs.at(-1)})`);
+  const metas = await page.$$eval("#grid .meta", e => e.slice(0, 6).map(x => x.textContent));
+  ok(metas.every(m => /^Lead Band \d+ · \d{4}$/.test(m)), `each card shows the artist and the year (${metas[0]})`);
+  ok((await page.$$("#grid .badge")).length === 0, "no star ratings on CDs (there is no IMDb for albums)");
+  ok(await page.$eval("#sort", e => [...e.options].filter(o => !o.hidden).map(o => o.value).join() === ",title,year"), "the ratings and film-year sorts are gone");
+  ok(await page.$eval("#q", e => e.placeholder === "Search albums and artists"), "the search box says what it searches");
+
+  // "The Godfather" as an album must not pick up the film's rating or a trailer
+  await page.evaluate(() => [...document.querySelectorAll("#grid .card")].find(c => c.querySelector(".ttl").textContent.trim() === "The Godfather").querySelector(".cover").click());
+  await sleep(500);
+  const d = await page.$eval("#detailBody", e => ({ text: e.textContent.replace(/\s+/g, " "), links: [...e.querySelectorAll("a")].map(a => a.textContent.trim()) }));
+  ok(/Lead Band 0 · 1990 · CD/.test(d.text), `the album page names the artist, the year and the format ("${d.text.slice(0, 80)}")`);
+  ok(!d.links.some(l => /Trailer|IMDb/.test(l)) && !/★/.test(d.text), "no trailer, no IMDb, no stars on an album");
+  ok(d.links.some(l => /track list/.test(l)), "it offers the track list at the library instead");
+  await page.evaluate(() => document.querySelector("#detail").close()); await sleep(500);
+
+  // a genre is one subject shelf at the catalog
+  await page.click("#filtBtn"); await sleep(200);
+  ok(!(await page.$("#filtBody #minR")), "no star-rating filter for CDs");
+  const chips = await page.$$eval("#filtBody [data-mg]", e => e.map(x => x.dataset.mg));
+  ok(chips.includes("jazz") && chips.includes("rock") && !(await page.$("#filtBody [data-genre]")), `music genres replace film genres (${chips.length} of them)`);
+  await page.click('#filtBody [data-mg="jazz"]'); await sleep(200);
+  await page.evaluate(() => document.querySelector("#filters").close());
+  await page.waitForFunction(() => /^25 CDs/.test(document.querySelector("#status").textContent.trim()), { timeout: 20000 });
+  ok(new URLSearchParams(W.searchReqs.at(-1)).get("shelf") === "jazz", `the genre is a shelf at the catalog (${W.searchReqs.at(-1)})`);
+  ok((await page.$$eval("#active .tag", e => e.map(x => x.textContent.replace("×", "").trim()))).join("|") === "Jazz", "one chip for the picked genre");
+
+  // a typed search goes to the catalog, still CDs only
+  await page.click('#active [data-clear="mg"]'); await sleep(300);
+  await page.type("#q", "miles davis");
+  await page.evaluate(() => document.querySelector("#searchForm").requestSubmit());
+  await page.waitForFunction(() => document.querySelectorAll("#grid .card").length >= 12, { timeout: 20000 });
+  const q1 = new URLSearchParams(W.searchReqs.at(-1));
+  ok(q1.get("q") === "miles davis" && q1.get("fmt") === "music", `the typed search asks the catalog for CDs (${W.searchReqs.at(-1)})`);
+
+  // back to films: the shelf is the copy again, and the music filter is gone
+  await page.$eval("#q", e => { e.value = ""; e.dispatchEvent(new Event("input", { bubbles: true })); });
+  await page.click('#fmt [data-fmt="all"]');
+  await page.waitForFunction(() => /\d[\d,]* titles/.test(document.querySelector("#status").textContent), { timeout: 20000 });
+  ok((await page.$$("#active .tag")).length === 0, "switching back to films clears the music genre");
+  ok(page.errors.length === 0, `no page errors ${page.errors.slice(0, 1)}`);
+});
+
+scenario("music CDs are offered only where the catalog can be searched live", async b => {
+  const ID = "vega.sdpl.na5.iiivega.com";
+  const rows = makeRows("v", 60).map((r, i) => { r[0] = `fg-${i}-uuid`; return r; });
+  const W = world({ snap: { [ID]: { body: snapBody(rows) }, alpha: { body: snapBody(makeRows("alpha", 200)) } },
+    pages: { "sdpl.na5.iiivega.com": "<title>San Diego Public Library</title>" } });
+  const { page } = await newPage(b, W);
+  await page.goto(`https://${HOST}/`, { waitUntil: "domcontentloaded" });
+  // a catalog we copy ourselves: no live search there, so no Music
+  await page.waitForSelector("#pickInput", { visible: true });
+  await page.type("#pickInput", "https://sdpl.na5.iiivega.com/search?query=cats");
+  await page.evaluate(() => document.querySelector("#pickForm").requestSubmit());
+  await waitCards(page, 12);
+  ok(await page.$eval('#fmt [data-fmt="music"]', e => e.hidden), "a Vega library does not offer Music");
+  // a Music choice saved at another library does not follow you to one that has no music search
+  await page.evaluate(() => { const s = JSON.parse(localStorage.getItem("nl")); s.fmt = "music"; localStorage.setItem("nl", JSON.stringify(s)); });
+  await page.goto(`https://${HOST}/?lib=${ID}`, { waitUntil: "domcontentloaded" });
+  await waitCards(page, 12);
+  ok(await page.$eval('#fmt [data-fmt="all"]', e => e.getAttribute("aria-pressed") === "true"), "it falls back to films");
+  ok(W.searchReqs.length === 0, `no stray catalog search (${W.searchReqs.length})`);
   ok(page.errors.length === 0, `no page errors ${page.errors.slice(0, 1)}`);
 });
 

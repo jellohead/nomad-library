@@ -1,10 +1,13 @@
-// The website check (/api/library) with the network mocked: pasting any normal library website should find the catalog.
+// Server code with the network mocked. Mostly the website check (/api/library): pasting any normal
+// library website should find the catalog. Also requests, email sign-ups and the music CD search.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { onRequestGet as library } from "../functions/api/library.js";
 import { onRequestPost as request } from "../functions/api/request.js";
 import { onRequestPost as notify } from "../functions/api/notify.js";
 import { onRequestGet as unsubscribe } from "../functions/api/unsubscribe.js";
+import { onRequestGet as search } from "../functions/api/search.js";
+import { shape, artistOf } from "../lib/core.js";
 
 const stored = new Map();
 globalThis.caches = { default: { async match(k) { return stored.get(k.url)?.clone(); }, async put(k, r) { stored.set(k.url, r.clone()); } } };
@@ -105,4 +108,53 @@ await test("email sign-ups: checked, robots ignored, a duplicate is one row, the
   const r = await unsubscribe({ request: new Request("https://x/api/unsubscribe?t=" + lib[6]), env: e });
   assert.match(await r.text(), /unsubscribed/); assert.equal(rows.size, 0, "unsubscribe deletes every row for that address");
 });
+await test("music CDs: the catalog is asked for CDs, with one subject heading per genre", async () => {
+  const asked = [];
+  const cd = (id, title, authors, fmt = "MUSIC_CD") => [id, { briefInfo: { title, subtitle: "", format: fmt, publicationDate: "1959", authors, subjectHeadings: [], genreForm: [], jacket: {} }, availability: { status: "AVAILABLE", availableCopies: 1, totalCopies: 2, heldCopies: 0 } }];
+  globalThis.fetch = async (url) => {
+    asked.push(String(url));
+    const bibs = Object.fromEntries([cd("C1", "Kind of Blue", ["Davis, Miles, 1926-1991"]), cd("C2", "Abbey Road", ["Beatles"])]);
+    return Response.json({ catalogSearch: { pagination: { count: 2, pages: 1 } }, entities: { bibs } });
+  };
+  const ask = async q => {
+    const r = await search({ request: new Request("https://x/api/search?" + q), env: {}, waitUntil() {} });
+    return { status: r.status, body: await r.json() };
+  };
+
+  const rock = await ask("lib=chipublib&fmt=music&shelf=rock");
+  assert.equal(rock.status, 200);
+  assert.match(asked[0], /f_FORMAT=MUSIC_CD/);
+  assert.match(asked[0], /query=Rock\+music&searchType=subject/);
+  assert.equal(rock.body.rows[0].f, "m");
+  assert.equal(rock.body.rows[0].fmt, "CD");
+  assert.equal(rock.body.rows[0].artist, "Miles Davis", "catalogs file music under 'Last, First'");
+  assert.equal(rock.body.rows[1].artist, "Beatles");
+  assert.match(rock.body.rows[0].url, /^https:\/\/chipublib\.bibliocommons\.com\/v2\/record\/C1$/);
+
+  // a film genre is not a music shelf: it must not leak into a CD search
+  await ask("lib=seattle&fmt=music&shelf=horror");
+  assert.match(asked[1], /query=\*&searchType=bl/);
+  assert.doesNotMatch(asked[1], /horror/);
+
+  // a typed search is a keyword search, still CDs only (the gateway indexes the artist, so names work)
+  await ask("lib=seattle&fmt=music&q=miles+davis");
+  assert.match(asked[2], /query=miles\+davis&searchType=keyword/);
+  assert.match(asked[2], /f_FORMAT=MUSIC_CD/);
+
+  // films are untouched
+  await ask("lib=seattle&fmt=all&shelf=horror");
+  assert.match(asked[3], /query=horror\+films&searchType=subject&f_FORMAT=DVD%7CBLURAY/);
+});
+
+await test("an artist's name is read off the record, a film's is left alone", () => {
+  assert.equal(artistOf({ authors: ["Jackson, Michael, 1958-2009"] }), "Michael Jackson");
+  assert.equal(artistOf({ authors: ["Script (Musical group)"] }), "Script");
+  assert.equal(artistOf({ authors: ["Bad Bunny"] }), "Bad Bunny");
+  assert.equal(artistOf({ authors: ["Beethoven, Ludwig van"] }), "Ludwig van Beethoven");
+  assert.equal(artistOf({}), "");
+  const film = shape("seattle", "B1", { briefInfo: { title: "Jaws", format: "BLURAY", authors: ["Spielberg, Steven"] }, availability: {} });
+  assert.equal(film.artist, "", "only CDs carry an artist");
+  assert.equal(film.f, "b");
+});
+
 globalThis.fetch = original;

@@ -15,7 +15,7 @@ const store = {
   set(v) { try { localStorage.setItem("nl", JSON.stringify(v)); } catch {} },
 };
 let S = Object.assign({ lib: null, libName: "", fmt: "all", shelf: "all", sort: "", onShelf: false, faves: {}, watch: null,
-  genres: [], coll: "", plat: "", y0: 0, y1: 0, minR: 0 }, store.get());
+  genres: [], coll: "", plat: "", mg: "", y0: 0, y1: 0, minR: 0 }, store.get());
 if (!Array.isArray(S.genres)) S.genres = [];
 delete S.ages;                            // the age-rating filter (11.1.26) was taken back out
 if ("genre" in S) {                       // saved before genres could be combined
@@ -94,7 +94,7 @@ async function rate(rows) {
     if (row.imdb !== undefined) return;
     const k = norm(row.title);
     row.imdb = null;
-    if (!k) return;
+    if (!k || row.f === "m") return;      // an album is not a film: matching it to IMDb only invents ratings
     const sub = (row.sub || "").replace(/\s*\/.*$/, "").trim();
     const tail = [row.title.includes(":") ? row.title.split(":").slice(1).join(" ") : "", sub].join(" ").trim();
     if (tail) {
@@ -145,6 +145,12 @@ const badgeHTML = r => (r.r && r.v >= 50 ? `<span class="badge"><b>★</b> ${r.r
 const GUEST = "shelf";
 const isGuest = () => S.lib === GUEST;
 const isMine = () => S.lib === MINE;
+// Music CDs (11.8.26): the library's copy holds films and games only, so CDs always come from the catalog
+// itself. That means one BiblioCommons library at a time: no nationwide shelf, no combined shelf, no
+// catalogs we copy ourselves (they have no live search here).
+const isMusic = () => S.fmt === "music";
+const musicOK = () => !!S.lib && !isGuest() && !isMine() && !isReaderLib(S.lib);
+const unit = () => S.fmt === "games" ? "games" : isMusic() ? "CDs" : "titles";
 // no shelf status to show: guests, and copies from catalogs that don't report it (snap "na", e.g. older LS2 PAC)
 const noAvail = () => isGuest() || (!isMine() && SNAP?.lib === S.lib && !!SNAP?.na);
 const libKey = e => e.lib === GUEST ? "shelf:" + (e.guest?.catalog?.host || e.guest?.host || e.name || "") : e.lib;
@@ -174,6 +180,10 @@ function guestCatalog() {
 const libLabel = () => S.libName || "your library";
 // Searches the visitor's own catalog for the title. Their browser opens it, so catalogs that block other websites still work.
 const checkUrl = r => searchLink(guestCatalog(), r.title);
+// Under the title: the platform for a game, the artist for a CD, the year for a film.
+const metaLine = r => esc(r.f === "g" ? r.plat || r.disc || ""
+  : r.f === "m" ? [r.artist, r.disc].filter(Boolean).join(" · ")
+  : filmYear(r));
 function cardHTML(r) {
   const rating = badgeHTML(r);
   const cover = r.img
@@ -186,7 +196,7 @@ function cardHTML(r) {
     <button class="cover" data-open="${esc(r.id)}" aria-label="${esc(r.title)}">${cover}${rating}</button>
     <button class="heart" data-fav="${esc(r.id)}" aria-pressed="${isFav(r)}" aria-label="Favorite">${isFav(r) ? "♥" : "♡"}</button>
     <div class="ttl">${esc(r.title)}${r.tv && r.sub ? `<span class="tsub">${esc(r.sub)}</span>` : ""}</div>
-    <div class="meta">${r.f === "g" ? esc(r.plat || r.disc || "") : esc(filmYear(r))}${isGuest() ? "" : ` · ${esc(r.fmts || r.fmt)}`}</div>
+    <div class="meta">${metaLine(r)}${isGuest() || r.f === "m" ? "" : ` · ${esc(r.fmts || r.fmt)}`}</div>
     ${av}
   </div>`;
 }
@@ -195,7 +205,10 @@ const rowsById = new Map();
 function remember(rows) { for (const r of rows) rowsById.set(r.id, r); return rows; }
 
 // One card per film: the library often has the DVD, the Blu-ray and a reissue as separate records.
-const filmKey = r => norm(r.title) + "|" + (r.imdb || r.disc || "") + "|" + (r.tv ? norm(r.sub) : "");
+// One card per album too, by title and artist, so two pressings of Purple Rain fold together but
+// every album called Greatest Hits stays its own card.
+const filmKey = r => r.f === "m" ? "m|" + norm(r.title) + "|" + norm(r.artist)
+  : norm(r.title) + "|" + (r.imdb || r.disc || "") + "|" + (r.tv ? norm(r.sub) : "");
 function edition(r) { return { id: r.id, rid: r.rid || r.id, lib: r.lib || S.lib, fmt: r.fmt, url: r.url, avail: r.avail, copies: r.copies, total: r.total, holds: r.holds, img: r.img, disc: r.disc }; }
 function absorb(into, r) {
   into.eds = into.eds || [edition(into)];
@@ -231,8 +244,8 @@ function openDetail(r) {
       <div>
         <h2>${esc(r.title)}</h2>
         ${r.sub ? `<p class="sub">${esc(r.sub)}</p>` : ""}
-        <div class="facts">${r.f === "g" ? esc(r.plat || "") || yearNote : yearNote}${fmtLabel ? ` · ${esc(fmtLabel)}` : ""}${r.r ? ` · <b>★ ${r.r.toFixed(1)}</b> from ${Number(r.v).toLocaleString()} votes` : ""}${noAvail() ? "" : `<br><span id="liveAv">${av}</span>`}</div>
-        <p id="detailSynopsis">${r.desc ? esc(r.desc) : isGuest() ? (r.imdb ? `<a href="https://www.imdb.com/title/${esc(r.imdb)}/" target="_blank" rel="noopener noreferrer">Read the synopsis on IMDb</a>` : "") : `<a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">Read the synopsis at your library</a>`}</p>
+        <div class="facts">${r.f === "g" ? esc(r.plat || "") || yearNote : r.f === "m" ? [esc(r.artist), yearNote].filter(Boolean).join(" · ") : yearNote}${fmtLabel ? ` · ${esc(fmtLabel)}` : ""}${r.r ? ` · <b>★ ${r.r.toFixed(1)}</b> from ${Number(r.v).toLocaleString()} votes` : ""}${noAvail() ? "" : `<br><span id="liveAv">${av}</span>`}</div>
+        <p id="detailSynopsis">${r.desc ? esc(r.desc) : isGuest() ? (r.imdb ? `<a href="https://www.imdb.com/title/${esc(r.imdb)}/" target="_blank" rel="noopener noreferrer">Read the synopsis on IMDb</a>` : "") : `<a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">${r.f === "m" ? "See the track list at your library" : "Read the synopsis at your library"}</a>`}</p>
         ${(r.eds && r.eds.length > 1 || isMine()) && !isGuest() ? `<div class="facts" id="edList">${editionsHTML(r)}</div>` : ""}
         <div class="actions">
           ${isGuest()
@@ -241,7 +254,7 @@ function openDetail(r) {
             : isMine() ? holdButtons(r)
             : `<a class="btn" href="${esc((r.eds?.find(e => e.avail) || r).url)}" target="_blank" rel="noopener noreferrer">${noAvail() ? `See it at ${esc(shortName(libLabel()))}` : r.avail ? "Place a hold" : "Get in line"}</a>`}
           ${isMine() ? guestLibs().map(e => `<a class="btn ghost" href="${esc(searchLink(e.guest.catalog, r.title))}" target="_blank" rel="noopener noreferrer">Check at ${esc(shortName(e.name) || "your other library")}</a>`).join("") : ""}
-          <a class="btn ghost" href="/t?q=${encodeURIComponent(r.title + " " + (r.fy || ""))}" target="_blank" rel="noopener noreferrer" data-trailer>Trailer</a>
+          ${r.f === "m" ? "" : `<a class="btn ghost" href="/t?q=${encodeURIComponent(r.title + " " + (r.fy || ""))}" target="_blank" rel="noopener noreferrer" data-trailer>Trailer</a>`}
           ${imdb}
           <button class="btn ghost" data-fav="${esc(r.id)}">${isFav(r) ? "♥ Saved" : "♡ Save"}</button>
         </div>
@@ -250,7 +263,7 @@ function openDetail(r) {
   $("#detail").showModal();
   const detailLib = S.lib;
   if (!r.desc && r.f !== "g" && !isGuest() && !isReaderLib((r.eds?.[0] || r).lib || detailLib)) {
-    const p = new URLSearchParams({ lib: (r.eds?.[0] || r).lib || detailLib, q: r.title, fmt: "all", page: "1" });
+    const p = new URLSearchParams({ lib: (r.eds?.[0] || r).lib || detailLib, q: r.title, fmt: r.f === "m" ? "music" : "all", page: "1" });
     api("/api/search?" + p).then(d => {
       const ids = new Set((r.eds || [r]).map(e => e.rid || e.id));
       const match = d.rows.find(row => ids.has(row.id) && row.desc);
@@ -343,6 +356,7 @@ function visible(rows) {
   return rows.filter(r => {
     if (S.onShelf && !r.avail) return false;
     if (S.fmt === "games") return !S.plat || r.plat === S.plat;
+    if (isMusic()) return (!S.y0 || r.disc >= S.y0) && (!S.y1 || (r.disc && r.disc <= S.y1));
     if (S.genres.includes("movies") && isTV(r)) return false;
     const year = r.fy || r.disc;
     return (!S.y0 || year >= S.y0) && (!S.y1 || (year && year <= S.y1)) &&
@@ -370,7 +384,7 @@ async function liveMore(my = run, fillPages = 0) {
     if (my !== run) return;
     page = d.page; pages = d.pages;
     remember(d.rows);
-    if (S.fmt !== "games" && (S.minR || S.y0 || S.y1)) {
+    if (S.fmt !== "games" && !isMusic() && (S.minR || S.y0 || S.y1)) {
       await rate(d.rows);
       if (my !== run) return;
     }
@@ -388,7 +402,7 @@ async function liveMore(my = run, fillPages = 0) {
       }
     });
     const localFilters = S.onShelf || S.plat || S.minR || S.y0 || S.y1;
-    $("#status").innerHTML = esc(d.total ? (localFilters ? `${$("#grid").children.length.toLocaleString()} matches loaded · ${d.total.toLocaleString()} catalog results` : `${d.total.toLocaleString()} titles`) : "Nothing here at this library.") + liveNote();
+    $("#status").innerHTML = esc(d.total ? (localFilters ? `${$("#grid").children.length.toLocaleString()} matches loaded · ${d.total.toLocaleString()} catalog results` : `${d.total.toLocaleString()} ${unit()}`) : isMusic() ? "No music CDs here at this library." : "Nothing here at this library.") + liveNote();
     paintCopyToast();
     $("#more").textContent = page < pages ? "Loading more…" : (d.total ? "That's the whole shelf." : "");
   } catch (e) {
@@ -506,7 +520,16 @@ function queryMatch(r, words) {
 }
 
 const COLLECTIONS = [["mustsee", "1001 must-sees"], ["oscar", "Oscar winners"], ["registry", "Film Registry"], ["criterion", "Criterion"], ["ghibli", "Studio Ghibli"]];
-const FMT_NAME = { b: "Blu-ray", d: "DVD", g: "Game" };
+// One shelf at a time, each one a subject heading in MUSIC_SHELVES (functions/api/search.js).
+const MUSIC_GENRES = [
+  ["rock", "Rock"], ["pop", "Pop"], ["hiphop", "Hip-hop"], ["jazz", "Jazz"], ["country", "Country"],
+  ["blues", "Blues"], ["rnb", "R&B"], ["soul", "Soul"], ["metal", "Metal"], ["punk", "Punk"],
+  ["alt", "Alternative"], ["electronic", "Electronic"], ["folk", "Folk"], ["bluegrass", "Bluegrass"],
+  ["reggae", "Reggae"], ["latin", "Latin"], ["gospel", "Gospel"], ["world", "World"],
+  ["orchestral", "Orchestral"], ["opera", "Opera"], ["piano", "Piano"], ["soundtrack", "Soundtracks"],
+  ["musicals", "Musicals"], ["holiday", "Holiday"], ["kids", "Kids"],
+];
+const FMT_NAME = { b: "Blu-ray", d: "DVD", g: "Game", m: "CD" };
 const YEAR_MIN = 1920, YEAR_MAX = new Date().getFullYear();
 const PER = 60;
 
@@ -760,7 +783,7 @@ function openCopy(lib) {
   });
 }
 
-const instant = () => SNAP && SNAP.lib === S.lib && SNAP.ver && ((!S.coll && !liveQ) || isMine());
+const instant = () => SNAP && SNAP.lib === S.lib && SNAP.ver && !isMusic() && ((!S.coll && !liveQ) || isMine());
 
 let checkingCopy = false;
 async function checkPendingCopy() {
@@ -822,7 +845,7 @@ function snapRender() {
       : q ? `${n} matches · <a href="${esc(searchLink(cat, q))}" target="_blank" rel="noopener noreferrer">Search ${esc(libLabel())} for “${esc(q)}”</a>`
       : `${n} popular movies · Tap one to check it at ${esc(libLabel())}`;
   } else
-  $("#status").innerHTML = `${snapList.length.toLocaleString()} ${S.fmt === "games" ? "games" : "titles"}` +
+  $("#status").innerHTML = `${snapList.length.toLocaleString()} ${unit()}` +
     (isMine() ? ` from ${SNAP.libs} ${SNAP.libs === 1 ? "library" : "libraries"}` : "") +
     (S.onShelf ? ` <span class="dim">· shelf status from ${when}, tap a title for right now</span>` : "") +
     (q && isReaderLib(S.lib) ? ` · <a href="${esc(searchLink(readerCatalog(S.lib, libUrlOf(S.lib)), q))}" target="_blank" rel="noopener noreferrer">Search ${esc(libLabel())} for “${esc(q)}”</a>` : "") +
@@ -858,23 +881,24 @@ async function reload() {
     if (S.lib !== lib || $("#q").value !== q) return;   // typed again while the name files loaded: the newer reload paints
     return snapRender();
   }
-  // live mode: while no copy is ready, for collections, and for whole-catalog searches
+  // live mode: while no copy is ready, for collections, for whole-catalog searches, and always for music
   // the live catalog takes one shelf at a time: the first picked genre that widens, else the first one
   const g = S.genres.find(x => !NARROW.has(x)) || S.genres[0];
-  S.shelf = S.fmt === "games" ? "all" : S.coll || (GENRES.find(x => x[0] === g)?.[2]) || "all";
+  S.shelf = S.fmt === "games" ? "all" : isMusic() ? (S.mg || "all") : S.coll || (GENRES.find(x => x[0] === g)?.[2]) || "all";
   await liveReload();
 }
 
 // ---- filters ---------------------------------------------------------------------
 
-const activeCount = () => S.genres.length + [S.coll, S.plat, S.y0 || S.y1, S.minR, S.onShelf].filter(Boolean).length;
+const activeCount = () => S.genres.length + [S.coll, S.plat, S.mg, S.y0 || S.y1, S.minR, S.onShelf].filter(Boolean).length;
 
 function paintActive() {
   const bits = [];
   const c = COLLECTIONS.find(x => x[0] === S.coll);
-  if (S.fmt !== "games") for (const [k, l] of GENRES) if (S.genres.includes(k)) bits.push(["genre:" + k, l]);
+  if (S.fmt !== "games" && !isMusic()) for (const [k, l] of GENRES) if (S.genres.includes(k)) bits.push(["genre:" + k, l]);
   if (c) bits.push(["coll", c[1]]);
   if (S.fmt === "games" && S.plat) bits.push(["plat", S.plat]);
+  if (isMusic() && S.mg) bits.push(["mg", MUSIC_GENRES.find(x => x[0] === S.mg)?.[1] || S.mg]);
   if (S.y0 || S.y1) bits.push(["years", `${S.y0 || YEAR_MIN} to ${S.y1 || YEAR_MAX}`]);
   if (S.minR) bits.push(["minR", `★ ${S.minR}+`]);
   if (S.onShelf) bits.push(["onShelf", "On the shelf"]);
@@ -889,24 +913,26 @@ function clearFilter(k) {
   if (k.startsWith("genre:")) S.genres = S.genres.filter(g => g !== k.slice(6));
   if (k === "all" || k === "coll") S.coll = "";
   if (k === "all" || k === "plat") S.plat = "";
+  if (k === "all" || k === "mg") S.mg = "";
   if (k === "all" || k === "years") { S.y0 = 0; S.y1 = 0; }
   if (k === "all" || k === "minR") S.minR = 0;
   if (k === "all" || k === "onShelf") S.onShelf = false;
 }
 
 function filterCount() {
-  if (!instant() && !(SNAP?.ver && !liveQ && !S.coll)) return "";
+  if (isMusic() || (!instant() && !(SNAP?.ver && !liveQ && !S.coll))) return "";
   return snapFilter().length.toLocaleString();
 }
 
 function openFilters() {
-  const games = S.fmt === "games";
+  const games = S.fmt === "games", music = isMusic();
   const plats = games && SNAP?.games ? [...new Set(SNAP.games.map(g => g.plat).filter(Boolean))].sort() : [];
   const chip = (attr, val, label, on) => `<button class="chip" ${attr}="${esc(val)}" aria-pressed="${on}">${esc(label)}</button>`;
   $("#filtBody").innerHTML = `<div class="in acct-body filt-body">
     <button class="x" data-close aria-label="Close">×</button>
     <h2>Filters</h2>
-    ${games ? `<h3>Platform</h3><div class="chipgrid">${chip("data-plat", "", "All", !S.plat)}${plats.map(p => chip("data-plat", p, p, S.plat === p)).join("")}</div>`
+    ${music ? `<h3>Genre</h3><div class="chipgrid">${chip("data-mg", "", "All", !S.mg)}${MUSIC_GENRES.map(([k, l]) => chip("data-mg", k, l, S.mg === k)).join("")}</div>`
+      : games ? `<h3>Platform</h3><div class="chipgrid">${chip("data-plat", "", "All", !S.plat)}${plats.map(p => chip("data-plat", p, p, S.plat === p)).join("")}</div>`
       : `<h3>Genre</h3><div class="chipgrid">${chip("data-genre", "", "All", !S.genres.length && !S.coll)}${GENRES.map(([k, l]) => chip("data-genre", k, l, S.genres.includes(k) && !S.coll)).join("")}</div>
          ${isMine() || isReaderLib(S.lib) ? "" : `<h3>Collections</h3><div class="chipgrid">${COLLECTIONS.map(([k, l]) => chip("data-coll", k, l, S.coll === k)).join("")}</div>`}`}
     <h3>Year</h3>
@@ -914,11 +940,11 @@ function openFilters() {
       <label>From <output id="y0o">${S.y0 || YEAR_MIN}</output><input type="range" id="y0" min="${YEAR_MIN}" max="${YEAR_MAX}" value="${S.y0 || YEAR_MIN}"></label>
       <label>To <output id="y1o">${S.y1 || YEAR_MAX}</output><input type="range" id="y1" min="${YEAR_MIN}" max="${YEAR_MAX}" value="${S.y1 || YEAR_MAX}"></label>
     </div>
-    ${games ? "" : `<h3>Rating</h3>
+    ${games || music ? "" : `<h3>Rating</h3>
     <label class="range1">At least <output id="mro">${S.minR ? "★ " + S.minR : "any"}</output><input type="range" id="minR" min="0" max="9" step="0.5" value="${S.minR}"></label>`}
     ${noAvail() ? "" : `<label class="toggle big"><input type="checkbox" id="onShelfF" ${S.onShelf ? "checked" : ""}> On the shelf now</label>`}
     <div class="stack" style="margin-top:18px">
-      <button class="btn" id="filtShow">Show ${filterCount() ? filterCount() + " " : ""}titles</button>
+      <button class="btn" id="filtShow">Show ${filterCount() ? filterCount() + " " : ""}${unit()}</button>
       <button class="link" id="filtClear" style="justify-self:center">Clear all</button>
     </div></div>`;
   if (!$("#filters").open) $("#filters").showModal();
@@ -927,12 +953,12 @@ function openFilters() {
 function filtChanged(rerender = true) {
   save(); paintActive();
   const btn = $("#filtShow");
-  if (btn) { const n = filterCount(); btn.textContent = `Show ${n ? n + " " : ""}titles`; }
+  if (btn) { const n = filterCount(); btn.textContent = `Show ${n ? n + " " : ""}${unit()}`; }
   if (rerender) openFilters();
 }
 
 $("#filtBody").addEventListener("click", e => {
-  const g = e.target.closest("[data-genre]"), c = e.target.closest("[data-coll]"), p = e.target.closest("[data-plat]");
+  const g = e.target.closest("[data-genre]"), c = e.target.closest("[data-coll]"), p = e.target.closest("[data-plat]"), mg = e.target.closest("[data-mg]");
   if (g) {
     const k = g.dataset.genre;
     S.genres = !k ? [] : S.genres.includes(k) ? S.genres.filter(x => x !== k)
@@ -941,6 +967,7 @@ $("#filtBody").addEventListener("click", e => {
   }
   else if (c) { S.coll = S.coll === c.dataset.coll ? "" : c.dataset.coll; if (S.coll) S.genres = []; filtChanged(); }
   else if (p) { S.plat = p.dataset.plat; filtChanged(); }
+  else if (mg) { S.mg = S.mg === mg.dataset.mg ? "" : mg.dataset.mg; filtChanged(); }   // the catalog takes one music shelf at a time
   else if (e.target.id === "filtClear") { clearFilter("all"); filtChanged(); }
   else if (e.target.id === "filtShow") { $("#filters").close(); }
 });
@@ -1346,12 +1373,22 @@ function setTab(tab) {
 
 function paintControls() {
   document.body.classList.toggle("guest", isGuest());
+  // Music only works where we can search the catalog live, so the button is there only at those libraries.
+  $('#fmt [data-fmt="music"]').hidden = !musicOK();
+  if (isMusic() && !musicOK()) S.fmt = "all";
   document.querySelectorAll("#fmt button").forEach(b => b.setAttribute("aria-pressed", b.dataset.fmt === S.fmt));
   // the nationwide shelf has no arrival dates, so it offers "Most popular" in place of "Newest arrivals"
   const first = $("#sort").options[0], guest = isGuest();
   if ((first.value === "pop") !== guest) { first.value = guest ? "pop" : ""; first.textContent = guest ? "Most popular" : "Newest arrivals"; }
   if (guest && !S.sort) S.sort = "pop";
   if (!guest && S.sort === "pop") S.sort = "";
+  // CDs have no ratings and no film year, so those sorts are only for films
+  const music = isMusic();
+  for (const o of $("#sort").options) if (o.value === "top" || o.value === "old") o.hidden = music;
+  const byYear = [...$("#sort").options].find(o => o.value === "year");
+  byYear.textContent = music ? "Newest releases" : "Newest films";
+  if (music && (S.sort === "top" || S.sort === "old")) S.sort = "";
+  $("#q").placeholder = music ? "Search albums and artists" : "Search titles, actors, directors, genres";
   $("#sort").value = S.sort;
 }
 
@@ -1602,7 +1639,13 @@ function boot(fromPop) {
   maybeAskUpdates();
 }
 
-$("#fmt").onclick = e => { const b = e.target.closest("button"); if (!b) return; S.fmt = b.dataset.fmt; save(); paintControls(); reload(); };
+$("#fmt").onclick = e => {
+  const b = e.target.closest("button"); if (!b) return;
+  const was = isMusic();
+  S.fmt = b.dataset.fmt;
+  if (isMusic() !== was) clearFilter("all");      // film genres and ratings mean nothing for CDs, and the other way round
+  save(); paintControls(); reload();
+};
 $("#sort").onchange = () => { S.sort = $("#sort").value; save(); reload(); };
 $("#searchForm").onsubmit = e => { e.preventDefault(); $("#q").blur(); liveQ = !instant() && !!$("#q").value.trim() ? liveQ : false; reload(); };
 let typing;
